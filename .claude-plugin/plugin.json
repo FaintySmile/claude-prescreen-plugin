@@ -1,0 +1,39 @@
+{
+  "name": "prescreen",
+  "displayName": "Menelaus Pre-Screen",
+  "version": "0.3.0",
+  "description": "Commercial-loan pre-screen from the deal mailbox, in a side pane: documents read by IDP right after collection, the figures that need the RM on their pages, cross-checks, quick spread, policy fit, structure and the pre-screen memo.",
+  "author": {
+    "name": "PythonRPA"
+  },
+  "keywords": [
+    "lending",
+    "pre-screen",
+    "idp",
+    "mcp",
+    "crm"
+  ],
+  "userConfig": {
+    "service_url": {
+      "type": "string",
+      "title": "Pre-screen service URL",
+      "description": "Base URL of the pre-screen service, without /mcp (the VM: http://74.234.37.28:14543; a local run: http://127.0.0.1:8765)",
+      "default": "http://74.234.37.28:14543",
+      "required": true
+    },
+    "api_token": {
+      "type": "string",
+      "title": "Service token",
+      "description": "PRESCREEN_API_TOKEN of the service (stored in the OS keychain)",
+      "sensitive": true,
+      "required": true
+    },
+    "rm_name": {
+      "type": "string",
+      "title": "Your name (RM)",
+      "description": "Recorded as the actor on every decision you make",
+      "default": "Elena Brooks"
+    }
+  },
+  "types": "./types/index.d.ts"
+}

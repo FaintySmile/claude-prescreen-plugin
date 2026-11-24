@@ -1,0 +1,14 @@
+{
+  "name": "menelaus",
+  "owner": {
+    "name": "PythonRPA"
+  },
+  "description": "Menelaus pre-screen plugin for Claude Code",
+  "plugins": [
+    {
+      "name": "prescreen",
+      "source": "./",
+      "description": "Commercial-loan pre-screen from the deal mailbox, in a side pane, over the pre-screen service's MCP endpoint"
+    }
+  ]
+}
