@@ -87,6 +87,17 @@ const plain = (v: unknown): string =>
 const table = (head: string[], rows: string[][]): string =>
   [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows.map(r => `| ${r.join(' | ')} |`)].join('\n')
 
+// one figure, as the server holds it and as a confirmation carries it: numbers as numbers (224500 and
+// "224500" agree), anything else (the PFS date "2026-08-31") as text. Number() alone made every date NaN,
+// and NaN equals nothing, so a date could never be confirmed.
+const sameFigure = (a: unknown, b: unknown): boolean => {
+  const num = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null)
+  const x = num(a)
+  const y = num(b)
+  if (x !== null && y !== null) return x === y
+  return String(a ?? '').trim() === String(b ?? '').trim() && a !== null && a !== undefined
+}
+
 const sameTarget = (a: unknown, b: Target): boolean => {
   if (typeof a !== 'object' || a === null) return false
   const left = Object.entries(a as Json).filter(([, v]) => v !== null && v !== undefined)
@@ -1507,7 +1518,7 @@ export const register: Register = (on, options) => {
           if (offer && !offer.options.includes(String(args.decision))) {
             return { deny: `prescreen: this target takes ${offer.options.join(' or ')}, not ${String(args.decision)}.` }
           }
-          if (offer && kind === 'field' && args.decision === 'confirm' && Number(args.value) !== Number(offer.value)) {
+          if (offer && kind === 'field' && args.decision === 'confirm' && !sameFigure(args.value, offer.value)) {
             return { deny: `prescreen: the figure on record is ${figure(offer.value)}. Confirm that figure, after the RM saw it on its page, or dispute it.` }
           }
         }

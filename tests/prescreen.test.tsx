@@ -8,8 +8,9 @@ const K1 = { type: 'document', document_id: 'doc_40a46b1710f3' }
 const F1 = { type: 'field', check_run_id: 'run_1', field: 'pfs_primary.business_income', confirmation_id: 'cfm_1' }
 const F2 = { type: 'field', check_run_id: 'run_1', field: 'pfs_primary.net_worth', confirmation_id: 'cfm_2' }
 const CARD = 'pfs_primary:p1'
+const F3 = { type: 'field', check_run_id: 'run_1', field: 'pfs_primary.as_of_date', confirmation_id: 'cfm_3' }
 
-type Deal = { k1Open: boolean; confirmed: string[]; down: boolean; suggested: boolean; metricsOnly?: boolean; gaps?: boolean; spreadError?: boolean; refusePrompts?: boolean; phase?: 'rule' | 'structure' | 'memo' | 'old'; noImage?: boolean; apiShape?: boolean; bigStrips?: boolean; noteWide?: boolean; stallStrips?: boolean; stallOpen?: boolean; bareStrips?: boolean; held?: (() => void)[] }
+type Deal = { k1Open: boolean; confirmed: string[]; down: boolean; suggested: boolean; metricsOnly?: boolean; gaps?: boolean; spreadError?: boolean; refusePrompts?: boolean; dateFigure?: boolean; phase?: 'rule' | 'structure' | 'memo' | 'old'; noImage?: boolean; apiShape?: boolean; bigStrips?: boolean; noteWide?: boolean; stallStrips?: boolean; stallOpen?: boolean; bareStrips?: boolean; held?: (() => void)[] }
 const RULE = { type: 'idp_rule', check_run_id: 'run_1', rule_id: 'r7', ack_id: 'ack_1' }
 const LINE = '$285,000 C&I equipment term loan, 60 months at 7.85%; $5,758.33 a month'
 
@@ -60,8 +61,10 @@ function spread(waiting: boolean, d: Deal) {
 
 function workbench(d: Deal) {
   const fields = [
-    { ref: 'pfs_primary.business_income', value: 224500, target: F1 },
-    { ref: 'pfs_primary.net_worth', value: 1501000, target: F2 },
+    // the PFS date: a figure that is text, not a number
+    ...(d.dateFigure ? [{ ref: 'pfs_primary.as_of_date', value: '2026-08-31' as number | string, target: F3 }] : []),
+    { ref: 'pfs_primary.business_income', value: 224500 as number | string, target: F1 },
+    { ref: 'pfs_primary.net_worth', value: 1501000 as number | string, target: F2 },
   ].filter(f => !d.confirmed.includes(f.target.confirmation_id))
   const stage = d.k1Open || fields.length ? 'checks' : 'policy_fit'
   const proposals: unknown[] = []
@@ -457,6 +460,35 @@ test('a pre-screen tool call opens the pane once and moves it to that step; no c
     expect(await r.find({ type: 'Text', text: /engine row/ })).toBeDefined()
     await r.unmount()
   }
+})
+
+test('a date figure (the PFS as-of date) is confirmed like any other, from the pane and from the chat', OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  d.k1Open = false
+  d.dateFigure = true
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  calls.length = 0
+  await ui.press({ key: 'card-0-confirm' })
+  const confirms = calls.filter(c => c.tool === 'record_decision')
+  expect(confirms.map(c => c.args.target)).toEqual([F3, F1, F2])
+  expect(confirms[0]?.args.value).toBe('2026-08-31')
+  expect(await ui.find({ type: 'Text', text: /Not recorded/ })).toBeUndefined()
+  expect(seen.prompts.at(-1)?.text).toContain('confirmed the 3 figures')
+  await ui.unmount()
+
+  // from the chat: the same date passes the guard; another date does not
+  const tool = 'mcp__plugin_prescreen_prescreen__record_decision'
+  d.confirmed = []
+  const other = await $.tool.call({ tool, opportunity_id: ID, target: F3, decision: 'confirm', value: '2026-08-30', actor: 'Elena Brooks' })
+  expect(other.deny).toContain('the figure on record is 2026-08-31')
+  const same = await $.tool.call({ tool, opportunity_id: ID, target: F3, decision: 'confirm', value: '2026-08-31', actor: 'Elena Brooks' })
+  expect(same.deny).toBeUndefined()
+  // a number sent as text is the same number
+  const asText = await $.tool.call({ tool, opportunity_id: ID, target: F1, decision: 'confirm', value: '224500', actor: 'Elena Brooks' })
+  expect(asText.deny).toBeUndefined()
 })
 
 test('a decision the model invents is refused; a real one is recorded under the RM', OPTIONS, async ($, on) => {
