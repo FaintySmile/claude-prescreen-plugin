@@ -33,13 +33,17 @@ me the pane"). It is drawn from the server's `workbench_view`, never from the mo
 - **Step 3, one card per thing that needs the RM:** a document question with its page (pager, the
   assistant's suggestion and its button marked), a hand-filled page with every figure in use listed and
   outlined in one picture (`All match the page` / `One is wrong…`, a figure up close at a press), a rule IDP
-  held back with its two sides and a reason box (`Go on, noted`).
+  held back with its two sides and a reason box (`Go on, noted`). Under the cards, the cross-check table and
+  the **quick spread**: every input with its value and where it was read (document and line, or the
+  opportunity record), the two lines behind the DSCR, and the nine metrics. It is marked provisional while a
+  figure behind it waits for the RM or the review is not clear; a service that sends the metrics only gets
+  the metrics and a note that the input lines need a newer service.
 - **Step 2** lists every document received, each with `Open`: its pages at the top, with a pager.
 - **Larger** under a page opens the **Page pane**: the page in sharp strips, figures outlined, a pager; Esc
   closes it. While it loads it names the step it is on (opening the pane, finding the server, part i of n,
   saving); a step that fails or does not answer (10 s for the open, 15 s for the server, 30 s per part) is
   shown in its place with `Try again`, never a bare "Loading".
-- Steps 4 to 6: the metrics and the policy table; the structure in one line with `Approve the structure` /
+- Steps 4 to 6: the nine metrics and the policy table; the structure in one line with `Approve the structure` /
   `Send it back`; the memo's state.
 
 **Reply buttons above the prompt** carry the open step's buttons, as the server lists them: a work step

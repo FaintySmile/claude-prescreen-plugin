@@ -13,7 +13,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AttentionRow, Board, Deal, Large, PageStage, Picture, Proposal, Target } from '../types'
+import type { AttentionRow, Board, Deal, Large, PageStage, Picture, Proposal, Spread, Target } from '../types'
 
 const PANE = 'prescreen'
 // the server's tools, under either name the session may list them by: the plugin's own server
@@ -38,7 +38,7 @@ const TOOL_STEP: Record<string, string> = {
 }
 
 const selected = atom({ plugin: 'prescreen', key: 'selected' } as const, null)
-const board = atom({ plugin: 'prescreen', key: 'board' } as const, null, { shape: 'board-2' })
+const board = atom({ plugin: 'prescreen', key: 'board' } as const, null, { shape: 'board-3' })
 const deals = atom({ plugin: 'prescreen', key: 'deals' } as const, [], { shape: 'deals-1' })
 const note = atom({ plugin: 'prescreen', key: 'note' } as const, '')
 const pictures = atom({ plugin: 'prescreen', key: 'pictures' } as const, {}, { shape: 'pictures-4' })
@@ -107,6 +107,7 @@ function toBoard(data: Json, hasScreens: boolean, now: string): Board {
   const cr: Json | null = data.check_run ?? null
   const fit: Json | null = data.policy_fit ?? null
   const m: Json = data.quick_spread?.metrics ?? {}
+  const perYear = (v: unknown) => (typeof v === 'number' ? `${money(v)} a year` : 'not available')
   const ratio = (v: unknown, unit: string) => (typeof v === 'number' ? v.toFixed(unit === '%' ? 1 : 2) + unit : 'not available')
   const structure: string[] = []
   const s: Json = fit?.structure ?? {}
@@ -244,15 +245,119 @@ function toBoard(data: Json, hasScreens: boolean, now: string): Board {
         },
     metrics: data.quick_spread
       ? [
+          `EBITDA ${money(m.ebitda)}`,
+          `Existing debt service ${perYear(m.existing_debt_service)}`,
+          `Proposed debt service ${perYear(m.proposed_debt_service)}`,
           `Business DSCR ${ratio(m.dscr, 'x')}`,
           `Global DSCR ${ratio(m.global_dscr, 'x')}`,
           `Funded debt to EBITDA ${ratio(m.funded_debt_to_ebitda, 'x')}`,
           `Guarantor liquidity ${ratio(m.guarantor_liquidity_pct, '%')}`,
           `Advance rate ${ratio(m.advance_rate_pct, '%')}`,
+          `Current ratio ${ratio(m.current_ratio, 'x')}`,
         ]
       : [],
+    spread: data.quick_spread ? toSpread(data.quick_spread) : null,
+    spreadError: data.quick_spread_error ? String(data.quick_spread_error.message ?? data.quick_spread_error.code ?? '') : '',
     loadedAt: now,
   }
+}
+
+// ------------------------------------------------------------------ the quick spread (step 3)
+
+const SPREAD_LABEL: Record<string, string> = {
+  ordinary_income: 'Ordinary business income',
+  interest_expense: 'Interest expense',
+  depreciation: 'Depreciation',
+  distributions: 'Distributions',
+  debt_monthly_payments: 'Existing loans, monthly payments',
+  debt_balances: 'Existing loans, balances',
+  wages: 'Guarantor wages',
+  pfs_as_of: 'PFS date',
+  pfs_cash: 'PFS cash and deposits',
+  pfs_mortgage: 'PFS mortgage',
+  pfs_auto_loans: 'PFS auto loans',
+  pfs_credit_cards: 'PFS credit cards',
+  interim_cash: 'Interim cash',
+  interim_receivables: 'Interim accounts receivable',
+  interim_inventory: 'Interim inventory',
+  interim_prepaid: 'Interim prepaid expenses',
+  interim_payables: 'Interim accounts payable',
+  interim_current_debt: 'Interim current portion of long-term debt',
+  loan_amount: 'Loan amount',
+  term_months: 'Term',
+  rate_pct: 'Rate',
+  equipment_cost: 'Equipment cost',
+}
+
+const spreadValue = (key: string, v: unknown): string => {
+  if (v === null || v === undefined || v === '') return 'not available'
+  if (key === 'term_months') return `${v} months`
+  if (key === 'rate_pct') return `${v}%`
+  return typeof v === 'number' ? money(v) : String(v)
+}
+
+function toSpread(q: Json): Spread {
+  const cf: Json = q.cash_flow ?? {}
+  const ds: Json = q.debt_service ?? {}
+  const lines: string[] = []
+  if (typeof cf.cash_available_for_debt_service === 'number' && typeof ds.total === 'number') {
+    lines.push(
+      `Cash available for debt service ${money(cf.cash_available_for_debt_service)} (EBITDA less maintenance capex ${money(cf.maintenance_capex)} and distributions ${money(cf.distributions)})`,
+      `Total debt service ${money(ds.total)} (existing ${money(ds.existing)}, proposed ${money(ds.proposed)}; ${money(ds.proposed_monthly_payment)} a month)`,
+    )
+  }
+  return {
+    inputs: Array.isArray(q.inputs)
+      ? q.inputs.map((i: Json) => ({
+          label: SPREAD_LABEL[String(i.key)] ?? String(i.key).replace(/_/g, ' '),
+          value: spreadValue(String(i.key), i.value),
+          from: i.document === 'Opportunity record' ? 'Opportunity record' : [i.document, i.location].filter(Boolean).join(', '),
+          waiting: i.waiting === true,
+          edited: i.edited === true,
+          note: String(i.note ?? ''),
+        }))
+      : null,
+    lines,
+    missing: (q.missing_inputs ?? []).map((x: Json) => `${String(x.metric).replace(/_/g, ' ')}: missing ${(x.missing ?? []).map((k: string) => SPREAD_LABEL[k] ?? k).join(', ')}`),
+  }
+}
+
+const spreadTable = (s: Spread): string =>
+  table(
+    ['Input', 'Value', 'Read from'],
+    (s.inputs ?? []).map(i => [
+      plain(i.label),
+      plain(i.value) + (i.waiting ? ' · waits for you' : '') + (i.edited ? ' · corrected in IDP' : ''),
+      plain(i.from) + (i.note ? ` (${plain(i.note)})` : ''),
+    ]),
+  )
+
+// step 3's spread: the inputs with their pages, then what they give. Provisional while a figure waits.
+function spreadMarkdown(b: Board): string {
+  const s = b.spread
+  if (!s) return b.spreadError ? `**Quick spread**\n\nNot worked out: ${plain(b.spreadError)}` : ''
+  const waiting = (s.inputs ?? []).filter(i => i.waiting).length
+  const unclear = b.run !== null && b.run.review !== 'clear'
+  // the server's own step: a document question or an unread set keeps step 3 open with every figure settled
+  const open = b.steps.find(x => x.key === 'checks')?.state !== 'done'
+  const provisional = waiting > 0 || unclear || open
+  const out = [provisional ? '**Quick spread (provisional)**' : '**Quick spread**']
+  out.push(
+    waiting
+      ? `${waiting} input(s) rest on figures that wait for you above. The numbers count once the review is clear.`
+      : unclear
+        ? 'The review is not clear yet. The numbers count once it is.'
+        : open
+          ? 'Step 3 is still open. The numbers count once it is done.'
+          : 'Every input is settled. The policy fit is step 4.',
+  )
+  if (s.inputs) out.push(spreadTable(s))
+  else out.push('This service sends the metrics only; the input lines need a newer service.')
+  // the plugin's own words around numbers it formatted: nothing from mail, so not escaped
+  if (s.lines.length) out.push(s.lines.map(x => `- ${x}`).join('\n'))
+  if (b.metrics.length) out.push(b.metrics.map(x => `- ${x}`).join('\n'))
+  if (s.missing.length) out.push(`Not worked out: ${s.missing.map(plain).join('; ')}`)
+  return out.join('\n\n')
 }
 
 const checklistTable = (b: Board): string =>
@@ -1033,6 +1138,8 @@ async function viewChecks($: Engine, e: any, rm: string, b: Board, columns: numb
   }
 
   if (b.run) out.push(<Markdown key="checks" text={`**Cross-checks: ${b.run.counts}; review ${plain(b.run.review)}**\n\n${checksTable(b)}`} />)
+  const spreadText = spreadMarkdown(b)
+  if (spreadText) out.push(<Markdown key="spread" text={spreadText} />)
   if (b.notes.length) {
     const open = await read($, showNotes)
     out.push(

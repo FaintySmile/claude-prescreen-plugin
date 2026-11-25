@@ -9,7 +9,7 @@ const F1 = { type: 'field', check_run_id: 'run_1', field: 'pfs_primary.business_
 const F2 = { type: 'field', check_run_id: 'run_1', field: 'pfs_primary.net_worth', confirmation_id: 'cfm_2' }
 const CARD = 'pfs_primary:p1'
 
-type Deal = { k1Open: boolean; confirmed: string[]; down: boolean; suggested: boolean; phase?: 'rule' | 'structure' | 'memo' | 'old'; noImage?: boolean; apiShape?: boolean; bigStrips?: boolean; noteWide?: boolean; stallStrips?: boolean; stallOpen?: boolean; bareStrips?: boolean; held?: (() => void)[] }
+type Deal = { k1Open: boolean; confirmed: string[]; down: boolean; suggested: boolean; metricsOnly?: boolean; gaps?: boolean; spreadError?: boolean; phase?: 'rule' | 'structure' | 'memo' | 'old'; noImage?: boolean; apiShape?: boolean; bigStrips?: boolean; noteWide?: boolean; stallStrips?: boolean; stallOpen?: boolean; bareStrips?: boolean; held?: (() => void)[] }
 const RULE = { type: 'idp_rule', check_run_id: 'run_1', rule_id: 'r7', ack_id: 'ack_1' }
 const LINE = '$285,000 C&I equipment term loan, 60 months at 7.85%; $5,758.33 a month'
 
@@ -25,6 +25,37 @@ function steps(stage: string) {
     headline: key === 'checks' ? '10 pass; 2 for you' : key === 'policy_fit' ? 'Not run yet' : '',
     waiting: key === 'checks' && stage === 'checks' ? 2 : 0,
   }))
+}
+
+// the compact quick spread: the server works it out once IDP has read, also while figures wait for the RM
+const METRICS = { ebitda: 399596, existing_debt_service: 45156, proposed_debt_service: 69100, dscr: 1.76, global_dscr: 1.96, funded_debt_to_ebitda: 0.96, guarantor_liquidity_pct: 23.5, advance_rate_pct: 80, current_ratio: 2.81 }
+function spread(waiting: boolean, d: Deal) {
+  if (d.metricsOnly) return { metrics: METRICS } // a service before the step-3 spread
+  // two owners: the wages input is not used, so the global DSCR is not worked out; no debt schedule read
+  if (d.gaps)
+    return {
+      metrics: { ...METRICS, existing_debt_service: null, global_dscr: null, dscr: null },
+      cash_flow: { ebitda: 399596, maintenance_capex: 82600, distributions: 115600, cash_available_for_debt_service: 201396 },
+      debt_service: { existing: null, proposed_monthly_payment: 5758.33, proposed: 69100, total: null },
+      missing_inputs: [{ metric: 'existing_debt_service', missing: ['debt_monthly_payments'] }, { metric: 'global_dscr', missing: ['wages'] }],
+      inputs: [
+        { key: 'debt_monthly_payments', value: null, document: 'Business debt schedule', location: 'Monthly pmt column, all rows' },
+        { key: 'wages', value: null, document: 'Form 1120-S 2025', location: 'page 1, line 7', note: "not used: more than one owner; each guarantor's Form W-2 is needed" },
+      ],
+    }
+  return {
+    metrics: METRICS,
+    cash_flow: { ebitda: 399596, maintenance_capex: 82600, distributions: 115600, cash_available_for_debt_service: 201396 },
+    debt_service: { existing: 45156, proposed_monthly_payment: 5758.33, proposed: 69100, total: 114256 },
+    missing_inputs: [],
+    inputs: [
+      { key: 'ordinary_income', value: 224500, document: 'Form 1120-S 2025', location: 'page 1, line 22' },
+      { key: 'debt_monthly_payments', value: 3763, document: 'Business debt schedule', location: 'Monthly pmt column, all rows', rows: 2, edited: true },
+      { key: 'pfs_as_of', value: 'August 31, 2026', document: 'PFS | [evil](http://x) signed.pdf', location: 'header, as-of date' },
+      { key: 'pfs_cash', value: 67000, document: 'PFS | [evil](http://x) signed.pdf', location: 'Assets: cash and deposits', ...(waiting ? { waiting: true } : {}) },
+      { key: 'rate_pct', value: 7.85, document: 'Opportunity record', location: 'request.rate_pct' },
+    ],
+  }
 }
 
 function workbench(d: Deal) {
@@ -74,7 +105,8 @@ function workbench(d: Deal) {
       review: { state: fields.length ? 'needs_confirmation' : 'clear', pending_confirmations: fields.map(f => ({ ref: f.ref, value: f.value, decision_target: f.target })) },
       checks: [{ check_id: 'M-07', title: 'PFS business income agrees with K-1', status: 'pass', review_state: fields.length ? 'needs_confirmation' : 'confirmed' }],
     },
-    quick_spread: stage === 'policy_fit' ? { metrics: { dscr: 1.76, global_dscr: 1.96, funded_debt_to_ebitda: 0.96, guarantor_liquidity_pct: 23.5, advance_rate_pct: 80 } } : null,
+    quick_spread: d.spreadError ? null : spread(fields.length > 0, d),
+    quick_spread_error: d.spreadError ? { code: 'policy_missing', message: 'No credit policy is configured' } : null,
     policy_fit: null,
   }
 }
@@ -531,6 +563,109 @@ test('steps 1 and 6, and the memo button above the prompt', OPTIONS, async ($, o
   await band.press({ key: 'band-next:memo' })
   expect(seen.prompts.at(-1)?.text).toBe('Draft the memo.')
   await band.unmount()
+})
+
+test('step 3 shows the quick spread: each input with where it was read, provisional while a figure waits', OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ type: 'Markdown', key: 'spread' })).toBeDefined()
+    await ui.unmount()
+  }
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const text = String((await ui.find({ type: 'Markdown', key: 'spread' }))?.props.text)
+  expect(text).toContain('**Quick spread (provisional)**')
+  expect(text).toContain('1 input(s) rest on figures that wait for you above')
+  expect(text).toContain('| Ordinary business income | $224,500 | Form 1120-S 2025, page 1, line 22 |')
+  expect(text).toContain('| PFS cash and deposits | $67,000 · waits for you |')
+  expect(text).toContain('$3,763 · corrected in IDP')
+  expect(text).toContain('| PFS date | August 31, 2026 |')
+  expect(text).toContain('| Rate | 7.85% | Opportunity record |')
+  // inbound file names never act as markdown
+  expect(text).not.toContain('[evil](http://x)')
+  expect(text).toContain('Cash available for debt service $201,396')
+  expect(text).toContain('Total debt service $114,256 (existing $45,156, proposed $69,100; $5,758.33 a month)')
+  for (const m of ['EBITDA $399,596', 'Business DSCR 1.76x', 'Global DSCR 1.96x', 'Current ratio 2.81x', 'Advance rate 80.0%']) expect(text).toContain(m)
+  await ui.unmount()
+})
+
+test('once every figure is settled the spread is final in step 3, and step 4 lists all nine metrics', OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  d.k1Open = false
+  d.confirmed = ['cfm_1', 'cfm_2']
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const four = String((await ui.find({ type: 'Markdown', key: 'metrics' }))?.props.text)
+  for (const m of ['EBITDA $399,596', 'Existing debt service $45,156 a year', 'Proposed debt service $69,100 a year', 'Business DSCR 1.76x', 'Global DSCR 1.96x', 'Funded debt to EBITDA 0.96x', 'Guarantor liquidity 23.5%', 'Advance rate 80.0%', 'Current ratio 2.81x'])
+    expect(four).toContain(m)
+  await ui.press({ key: 'step-checks' })
+  const text = String((await ui.find({ type: 'Markdown', key: 'spread' }))?.props.text)
+  expect(text).toContain('**Quick spread**')
+  expect(text).not.toContain('provisional')
+  expect(text).toContain('Every input is settled. The policy fit is step 4.')
+  expect(text).not.toContain('waits for you')
+  await ui.unmount()
+})
+
+test('step 3 stays provisional while a document question is open, even with every figure confirmed', OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  d.confirmed = ['cfm_1', 'cfm_2'] // the K-1 question is still open
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const text = String((await ui.find({ type: 'Markdown', key: 'spread' }))?.props.text)
+  expect(text).toContain('**Quick spread (provisional)**')
+  expect(text).toContain('Step 3 is still open. The numbers count once it is done.')
+  await ui.unmount()
+})
+
+test('missing inputs: the metric reads not available, never zero, and the spread says what is missing', OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  d.gaps = true
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const text = String((await ui.find({ type: 'Markdown', key: 'spread' }))?.props.text)
+  expect(text).toContain('| Existing loans, monthly payments | not available |')
+  expect(text).toContain("| Guarantor wages | not available | Form 1120-S 2025, page 1, line 7 (not used: more than one owner; each guarantor's Form W-2 is needed) |")
+  expect(text).toContain('- Existing debt service not available\n')
+  expect(text).toContain('- Business DSCR not available')
+  expect(text).toContain('- Global DSCR not available')
+  expect(text).not.toContain('Cash available for debt service') // no total debt service: the DSCR lines are left out
+  expect(text).toContain('Not worked out: existing debt service: missing Existing loans, monthly payments; global dscr: missing Guarantor wages')
+  await ui.unmount()
+})
+
+test('a spread the service could not work out says why in step 3', OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  d.spreadError = true
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(String((await ui.find({ type: 'Markdown', key: 'spread' }))?.props.text)).toBe('**Quick spread**\n\nNot worked out: No credit policy is configured')
+  await ui.unmount()
+})
+
+test('a service that sends the metrics only: step 3 shows them and says the input lines need a newer service', OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  d.metricsOnly = true
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const text = String((await ui.find({ type: 'Markdown', key: 'spread' }))?.props.text)
+  expect(text).toContain('the input lines need a newer service')
+  expect(text).toContain('Business DSCR 1.76x')
+  expect(text).not.toContain('| Input |')
+  await ui.unmount()
 })
 
 test('an older server: the pane says so and still shows the documents and their questions', OPTIONS, async ($, on) => {

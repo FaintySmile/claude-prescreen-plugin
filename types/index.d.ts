@@ -62,6 +62,11 @@ export type AttentionRow = {
 export type PendingRow = { ref: string; value: number | string | null; target: Target }
 export type CheckRow = { id: string; title: string; status: string; note: string }
 export type FitRow = { section: string; rule: string; limit: string; value: string; status: string }
+// one input of the quick spread, drawn in step 3: what it is, its value, where it was read
+// waiting: a figure behind it still needs the RM; edited: corrected in IDP
+export type SpreadInput = { label: string; value: string; from: string; waiting: boolean; edited: boolean; note: string }
+// inputs is null when the service sends the metrics only (a service older than this plugin)
+export type Spread = { inputs: SpreadInput[] | null; lines: string[]; missing: string[] }
 
 export type Board = {
   id: string
@@ -91,7 +96,11 @@ export type Board = {
     pending: PendingRow[]
   }
   fit: null | { version: string; text: string; rules: FitRow[]; structure: string[]; oneLine: string }
+  // the nine quick-spread metrics, worded; empty until IDP has read the documents
   metrics: string[]
+  spread: Spread | null
+  // why the service could not work out the spread ('' when it could, or has not tried)
+  spreadError: string
   loadedAt: string
 }
 
