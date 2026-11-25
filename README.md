@@ -36,7 +36,9 @@ me the pane"). It is drawn from the server's `workbench_view`, never from the mo
   held back with its two sides and a reason box (`Go on, noted`).
 - **Step 2** lists every document received, each with `Open`: its pages at the top, with a pager.
 - **Larger** under a page opens the **Page pane**: the page in sharp strips, figures outlined, a pager; Esc
-  closes it.
+  closes it. While it loads it names the step it is on (opening the pane, finding the server, part i of n,
+  saving); a step that fails or does not answer (10 s for the open, 15 s for the server, 30 s per part) is
+  shown in its place with `Try again`, never a bare "Loading".
 - Steps 4 to 6: the metrics and the policy table; the structure in one line with `Approve the structure` /
   `Send it back`; the memo's state.
 

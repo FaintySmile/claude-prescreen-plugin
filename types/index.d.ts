@@ -97,7 +97,11 @@ export type Board = {
 
 // a small copy of a page (base64), for the pane
 // error: why the page could not be had ('' when it was): shown in the pane, never swallowed
-export type Picture = { format: 'png' | 'jpeg'; data: string; width: number; height: number; pages: number; caption: string; error: string }
+// noInfo: the picture came without the server's details (page count, size), so those are guesses
+export type Picture = { format: 'png' | 'jpeg'; data: string; width: number; height: number; pages: number; caption: string; error: string; noInfo?: true }
+
+// where the Page pane's loading stands: what it is doing now, or where it stopped (failed)
+export type PageStage = { text: string; failed: boolean }
 
 export type Deal = { id: string; borrower: string; summary: string }
 
@@ -145,6 +149,8 @@ declare module 'claude-code' {
       // what the Page pane shows, and its strips (key: the strip's place, from 0)
       large: Shaped<Large | null>
       strips: Shaped<Record<string, Picture>>
+      // the Page pane's loading, step by step, so a stall or a failure is shown, never a bare "Loading"
+      pageStage: Shaped<PageStage>
     }
   }
 }

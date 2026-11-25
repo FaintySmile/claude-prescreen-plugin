@@ -13,7 +13,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AttentionRow, Board, Deal, Large, Picture, Proposal, Target } from '../types'
+import type { AttentionRow, Board, Deal, Large, PageStage, Picture, Proposal, Target } from '../types'
 
 const PANE = 'prescreen'
 // the server's tools, under either name the session may list them by: the plugin's own server
@@ -56,7 +56,12 @@ const closeup = atom({ plugin: 'prescreen', key: 'closeup' } as const, null)
 // what the Page pane shows, and its strips
 const large = atom({ plugin: 'prescreen', key: 'large' } as const, null, { shape: 'large-1' })
 const strips = atom({ plugin: 'prescreen', key: 'strips' } as const, {}, { shape: 'strips-1' })
+const pageStage = atom({ plugin: 'prescreen', key: 'pageStage' } as const, { text: '', failed: false }, { shape: 'page-stage-1' })
 const PAGE_PANE = 'prescreen-page'
+// how long the Page pane waits on each step before it says which one did not answer
+const OPEN_MS = 10_000
+const SERVER_MS = 15_000
+const IMAGE_MS = 30_000
 
 type Engine = EngineInterface
 type Json = Record<string, any>
@@ -307,6 +312,32 @@ async function ask($: Engine, server: string, tool: string, args: Json): Promise
   }
 }
 
+// `p`, or a rejection naming `what` once `ms` pass without an answer: a step that never settles is named,
+// not waited on forever. The timer is the engine's (`$.clock.after`), so the wait is not the hook's own time.
+function within<T>($: Engine, ms: number, what: string, p: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false
+    let timer: { cancel: () => void } | null = null
+    const settle = (f: () => void) => {
+      if (done) return
+      done = true
+      timer?.cancel()
+      f()
+    }
+    try {
+      timer = $.clock.after(ms, () => settle(() => reject(new Error(`${what} did not answer in ${Math.round(ms / 1000)} s`))))
+    } catch {
+      timer = null // no timer here: wait on the call alone
+    }
+    p.then(
+      v => settle(() => resolve(v)),
+      err => settle(() => reject(err)),
+    )
+  })
+}
+
+const message = (err: unknown): string => (err instanceof Error ? err.message : String(err)).slice(0, 240)
+
 // the window the session started in, as session.start reports it (a reload runs session.start again)
 let firstSurface = ''
 // the pane opens by itself once per session, on the first pre-screen tool call
@@ -343,11 +374,13 @@ async function pictureAt(
   format: 'png' | 'jpeg',
   caption: string,
   maxWidth: number,
+  limitMs = 0,
 ): Promise<Picture> {
   const failed = (error: string): Picture => ({ format, data: '', width: 0, height: 0, pages: 1, caption, error })
   let r
   try {
-    r = await mcpCall($, server, tool, { ...args, format, max_width: maxWidth })
+    const call = mcpCall($, server, tool, { ...args, format, max_width: maxWidth })
+    r = await (limitMs ? within($, limitMs, `${tool} (${maxWidth} px)`, call) : call)
   } catch (err) {
     return failed(`the call failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 240))
   }
@@ -369,7 +402,10 @@ async function pictureAt(
   // an SVG holds at most 131,072 characters and the terminal reads at most 2 MiB: leave out what does not fit
   const cap = format === 'png' ? 900_000 : 120_000
   if (img.data.length >= cap) return failed(`the picture is ${img.data.length} characters, over the ${cap} this surface draws`)
-  return { format, data: img.data, width: Number(info.width) || 560, height: Number(info.height) || 240, pages: Number(info.page_count) || 1, caption, error: '' }
+  const pic: Picture = { format, data: img.data, width: Number(info.width) || 560, height: Number(info.height) || 240, pages: Number(info.page_count) || 1, caption, error: '' }
+  // the server always sends its details: without them the page count and the size above are guesses
+  if (!Number(info.width) || !Number(info.height)) pic.noInfo = true
+  return pic
 }
 
 async function loadPictures($: Engine, server: string, b: Board): Promise<void> {
@@ -436,11 +472,37 @@ const STRIP_PLANS: [number, number][] = [
   [6, 1000],
 ]
 
-async function loadLarge($: Engine): Promise<void> {
+// each load of the Page pane counts up: a load that a newer one (Try again, another page, Close) replaced
+// stops writing
+let largeRun = 0
+
+const setStage = ($: Engine, text: string, failed = false): Promise<unknown> =>
+  update($, pageStage, () => ({ text, failed })).catch(() => undefined)
+
+// Loads the Page pane's strips and says at each step where it stands. Never throws: a step that fails or
+// does not answer is written to `pageStage`, which the Page pane draws with a Try again button.
+async function loadLarge($: Engine, lead = ''): Promise<void> {
+  const run = ++largeRun
+  const current = () => run === largeRun
+  // `lead`: what opening the pane said, kept in front of each step
+  const say = (text: string, failed = false) => (current() ? setStage($, (lead + text).trim(), failed) : Promise.resolve())
+  try {
+    await loadLargeSteps($, current, say)
+  } catch (err) {
+    await say(`Stopped: ${message(err)}`, true)
+  }
+}
+
+async function loadLargeSteps($: Engine, current: () => boolean, setStage: (text: string, failed?: boolean) => Promise<unknown>): Promise<void> {
   const L = await read($, large)
   if (!L) return
-  const server = await findServer($)
-  if (!server) return
+  await setStage('Finding the pre-screen server…')
+  const server = await within($, SERVER_MS, 'The list of tools', findServer($))
+  if (!current()) return
+  if (!server) {
+    await setStage('The pre-screen server is not connected, so the page cannot be asked for.', true)
+    return
+  }
   const format = firstSurface === 'terminal' ? 'png' : 'jpeg'
   const base =
     L.kind === 'doc'
@@ -452,7 +514,9 @@ async function loadLarge($: Engine): Promise<void> {
     got = []
     let over = false
     for (let i = 1; i <= n; i++) {
-      const pic = await pictureAt($, server.name, base.tool, { ...base.args, band: i, bands: n }, format, `${L.title}, page ${L.page}, part ${i} of ${n}`, width)
+      await setStage(`Asking for part ${i} of ${n} (${width} px)…`)
+      const pic = await pictureAt($, server.name, base.tool, { ...base.args, band: i, bands: n }, format, `${L.title}, page ${L.page}, part ${i} of ${n}`, width, IMAGE_MS)
+      if (!current()) return
       got.push(pic)
       if (pic.error) {
         over = true
@@ -461,19 +525,49 @@ async function loadLarge($: Engine): Promise<void> {
     }
     if (!over) break
   }
-  await update($, strips, () => Object.fromEntries(got.map((p, i) => [String(i), p])))
-  const pages = got[0] && !got[0].error ? got[0].pages : L.pages
+  const chars = got.reduce((sum, p) => sum + p.data.length, 0)
+  await setStage(`Saving ${got.length} part${got.length === 1 ? '' : 's'} (${chars.toLocaleString('en-US')} characters)…`)
+  try {
+    await update($, strips, () => Object.fromEntries(got.map((p, i) => [String(i), p])))
+  } catch (err) {
+    throw new Error(`saving the ${got.length} parts (${chars.toLocaleString('en-US')} characters) failed: ${message(err)}`)
+  }
+  const first = got[0]
+  const pages = first && !first.error && !first.noInfo ? first.pages : L.pages
   if (L.kind === 'doc' && pages !== L.pages) await update($, large, v => (v ? { ...v, pages } : v))
+  const bad = got.find(p => p.error)
+  if (bad) await setStage(`The page could not be drawn: ${bad.error}`, true)
+  else if (got.some(p => p.noInfo))
+    await setStage("The parts came without the server's details (page count, size), so the page count shown may be wrong.")
+  else await setStage('')
 }
 
 async function openLarge($: Engine, what: Large): Promise<void> {
-  await update($, large, () => what)
-  await update($, strips, () => ({}))
-  const opened = await $.ui.open({ id: PAGE_PANE, title: 'Page', focus: true, closeOnEscape: true })
-  if (!opened.isPlaced) {
-    await update($, note, () => 'This window has no room for a second pane; the review page shows every page at full size.')
-    return
+  try {
+    await update($, large, () => what)
+    await update($, strips, () => ({}))
+    await setStage($, 'Opening the Page pane…')
+    // what the open said, kept in front of every later step so it stays on screen
+    let lead = ''
+    try {
+      const opened = await within($, OPEN_MS, 'Opening the Page pane', $.ui.open({ id: PAGE_PANE, title: 'Page', focus: true, closeOnEscape: true }))
+      if (!opened.isPlaced) {
+        await update($, note, () => 'This window has no room for a second pane; the review page shows every page at full size.')
+        // the pane may be on screen all the same (a tab): load, so it does not wait forever
+        lead = `The window answered that the Page pane is not placed (${opened.reason}); loading anyway. `
+      }
+    } catch (err) {
+      lead = `${message(err)}; loading anyway. `
+    }
+    await loadLarge($, lead)
+  } catch (err) {
+    await setStage($, `Stopped before loading: ${message(err)}`, true)
   }
+}
+
+// Try again, from the Page pane's own button: a handler of the pane on screen, not of the hidden Pre-screen pane
+async function retryLarge($: Engine): Promise<void> {
+  await update($, strips, () => ({})).catch(() => undefined)
   await loadLarge($)
 }
 
@@ -756,11 +850,19 @@ async function drawPagePane($: Engine, e: any) {
   const list = Object.keys(s)
     .sort((a, b) => Number(a) - Number(b))
     .map(k => s[k])
+  const st = await read($, pageStage)
   const go = async (to: number) => {
-    await update($, large, v => (v ? { ...v, page: to } : v))
-    await update($, strips, () => ({}))
+    try {
+      await update($, large, v => (v ? { ...v, page: to } : v))
+      await update($, strips, () => ({}))
+    } catch (err) {
+      await setStage($, `Stopped before loading: ${message(err)}`, true)
+      return
+    }
     await loadLarge($)
   }
+  // a page not (fully) drawn: the stage says why, and the pane's own button asks again
+  const unfinished = !list.length || list.some(p => !p || p.error)
   return (
     <Box flexDirection="column">
       <Text bold>
@@ -771,9 +873,15 @@ async function drawPagePane($: Engine, e: any) {
       <Box flexDirection="row" flexWrap="wrap" gap={1} marginTop={1}>
         {L.kind === 'doc' && L.page > 1 ? <Button key="page-prev" label="Previous page" onPress={() => go(L.page - 1)} /> : null}
         {L.kind === 'doc' && L.page < L.pages ? <Button key="page-next" label="Next page" onPress={() => go(L.page + 1)} /> : null}
+        {unfinished ? <Button key="page-retry" label="Try again" variant={st.failed ? 'primary' : 'secondary'} onPress={() => retryLarge($)} /> : null}
         <Button key="page-close" label="Close" onPress={() => $.ui.close({ id: PAGE_PANE })} />
       </Box>
-      {list.length ? list.map((p, i) => shot($, e, p, `strip-${i}`, 90)) : <Text dimColor>Loading the page…</Text>}
+      {st.text ? (
+        <Text key="page-stage" color={st.failed ? 'warning' : undefined} dimColor={!st.failed}>
+          {st.text}
+        </Text>
+      ) : null}
+      {list.length ? list.map((p, i) => shot($, e, p, `strip-${i}`, 90)) : st.text ? null : <Text dimColor>Loading the page…</Text>}
     </Box>
   )
 }
@@ -1289,7 +1397,11 @@ export const register: Register = (on, options) => {
   on('ui.close', async ($, e, next) => {
     const id = (e as unknown as Json).id
     if (id === PANE) await update($, placed, () => false)
-    if (id === PAGE_PANE) await update($, strips, () => ({}))
+    if (id === PAGE_PANE) {
+      largeRun++ // a load still running for the closed pane writes nothing more
+      await update($, strips, () => ({}))
+      await setStage($, '')
+    }
     return next(e)
   })
 

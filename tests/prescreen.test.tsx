@@ -9,7 +9,7 @@ const F1 = { type: 'field', check_run_id: 'run_1', field: 'pfs_primary.business_
 const F2 = { type: 'field', check_run_id: 'run_1', field: 'pfs_primary.net_worth', confirmation_id: 'cfm_2' }
 const CARD = 'pfs_primary:p1'
 
-type Deal = { k1Open: boolean; confirmed: string[]; down: boolean; suggested: boolean; phase?: 'rule' | 'structure' | 'memo' | 'old'; noImage?: boolean; apiShape?: boolean; bigStrips?: boolean; noteWide?: boolean }
+type Deal = { k1Open: boolean; confirmed: string[]; down: boolean; suggested: boolean; phase?: 'rule' | 'structure' | 'memo' | 'old'; noImage?: boolean; apiShape?: boolean; bigStrips?: boolean; noteWide?: boolean; stallStrips?: boolean; stallOpen?: boolean; bareStrips?: boolean; held?: (() => void)[] }
 const RULE = { type: 'idp_rule', check_run_id: 'run_1', rule_id: 'r7', ack_id: 'ack_1' }
 const LINE = '$285,000 C&I equipment term loan, 60 months at 7.85%; $5,758.33 a month'
 
@@ -166,6 +166,8 @@ function server(on: On, d: Deal, calls: Call[], seen: Seen, placed = true) {
   on('tool.register', () => ({ value: { tool: 'mcp__prescreen__open_pane' } }))
   on('ui.open', (_, e) => {
     seen.opened.push(e as unknown as Record<string, any>)
+    // a window that never answers the Page pane's open (until its time limit passes)
+    if (d.stallOpen && (e as any).id === 'prescreen-page') return new Promise(r => (d.held ??= []).push(() => r({ value: { isPlaced: true as const } })))
     return { value: placed ? { isPlaced: true as const } : { isPlaced: false as const, reason: 'no surface docks panes here' } }
   })
   on('ui.close', (_, e) => {
@@ -173,6 +175,16 @@ function server(on: On, d: Deal, calls: Call[], seen: Seen, placed = true) {
     return { value: undefined }
   })
   on('ui.status', () => ({ value: undefined }))
+  // the Page pane's time limits: the one for the stalled step passes at once, and then the stalled call
+  // answers (late, ignored); every other timer is the engine's own
+  on('clock.after', (_, e, next) => {
+    if ((d.stallStrips && e.ms === 30_000) || (d.stallOpen && e.ms === 10_000)) {
+      const late = (d.held ?? []).splice(0)
+      void Promise.resolve().then(() => late.forEach(f => f()))
+      return { value: undefined }
+    }
+    return next(e)
+  })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('clock.now', () => ({ value: 1795000000000 }))
   on('tool.list', () => ({ value: TOOLS }))
@@ -199,6 +211,13 @@ function server(on: On, d: Deal, calls: Call[], seen: Seen, placed = true) {
     if (d.noteWide && e.tool === 'document_image' && !(e.args as any).band && (e.args as any).max_width > 560) return { value: { content: [{ type: 'text', text: 'result too large' }], isError: false } }
     // a strip too large for one picture: the pane asks for more, smaller strips
     if (d.bigStrips && (e.args as any).bands === 3) return { value: { content: [{ type: 'image', data: 'A'.repeat(130_000), mimeType: 'image/jpeg' }], isError: false, structuredContent: { width: 1300, height: 600 } } }
+    // a strip that comes without the server's details (page count, size)
+    if (d.bareStrips && e.tool === 'document_image' && (e.args as any).bands) return { value: { content: [{ type: 'image', data: DOT, mimeType: 'image/jpeg' }], isError: false } }
+    // a strip that never answers (until the time limit passes)
+    if (d.stallStrips && e.tool === 'document_image' && (e.args as any).bands) {
+      const late = { value: { content: [{ type: 'image', data: DOT, mimeType: 'image/jpeg' }], isError: false, structuredContent: { width: 1300, height: 600, page: 1, page_count: 2 } } }
+      return new Promise(r => (d.held ??= []).push(() => r(late)))
+    }
     if (e.tool === 'document_image' && d.noImage) return { value: { content: [{ type: 'text', text: '[Image: source: page.jpg]' }], isError: false, structuredContent: { width: 560, height: 725 } } }
     if (e.tool === 'document_image') return { value: { content: [{ type: 'image', data: DOT, mimeType: 'image/jpeg' }], isError: false, structuredContent: { width: 560, height: 725, page: 1, page_count: 2 } } }
     if (e.tool === 'evidence_image') return { value: { content: [{ type: 'image', data: DOT, mimeType: 'image/jpeg' }], isError: false, structuredContent: { width: 560, height: 725 } } }
@@ -730,5 +749,69 @@ test('a strip too large for one picture: the Page pane asks for more, smaller st
   await ui.unmount()
   const page = await $.ui.mount({ ...PAGE, surface: 'desktop' })
   expect((await page.findAll({ type: 'Svg' })).length).toBe(4)
+  await page.unmount()
+})
+
+test('a strip that never answers: the Page pane names the step, and its own Try again loads the page', OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  d.stallStrips = true
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  calls.length = 0
+  await ui.press({ key: 'larger-doc-doc_40a46b1710f3' })
+  await ui.unmount()
+  let page = await $.ui.mount({ ...PAGE, surface: 'desktop' })
+  // never a bare "Loading": the step that did not answer is named, with a button to ask again
+  expect(await page.find({ type: 'Text', text: /Loading the page/ })).toBeUndefined()
+  expect(await page.find({ type: 'Text', text: /document_image \(\d+ px\) did not answer in 30 s/ })).toBeDefined()
+  expect((await page.findAll({ type: 'Svg' })).length).toBe(0)
+  expect(await page.find({ type: 'Button', key: 'page-retry' })).toBeDefined()
+  // the server answers again: the Page pane's own button loads the strips
+  d.stallStrips = false
+  await page.press({ key: 'page-retry' })
+  await page.unmount()
+  page = await $.ui.mount({ ...PAGE, surface: 'desktop' })
+  expect((await page.findAll({ type: 'Svg' })).length).toBe(3)
+  expect(await page.find({ type: 'Text', text: /did not answer/ })).toBeUndefined()
+  expect(await page.find({ type: 'Button', key: 'page-retry' })).toBeUndefined()
+  // closing the pane leaves nothing behind for the next Larger
+  await page.press({ key: 'page-close' })
+  await page.unmount()
+  expect(seen.closed).toContain('prescreen-page')
+})
+
+test('a window that never answers the Page pane open: it says so and loads the page anyway', OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  d.stallOpen = true
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  calls.length = 0
+  await ui.press({ key: 'larger-doc-doc_40a46b1710f3' })
+  await ui.unmount()
+  expect(calls.filter(c => c.tool === 'document_image' && c.args.bands === 3).map(c => c.args.band)).toEqual([1, 2, 3])
+  const page = await $.ui.mount({ ...PAGE, surface: 'desktop' })
+  expect((await page.findAll({ type: 'Svg' })).length).toBe(3)
+  expect(await page.find({ type: 'Text', text: /Opening the Page pane did not answer in 10 s; loading anyway/ })).toBeDefined()
+  await page.unmount()
+})
+
+test("strips without the server's details: drawn, and the pane says the page count may be wrong", OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  d.bareStrips = true
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'larger-doc-doc_40a46b1710f3' })
+  await ui.unmount()
+  const page = await $.ui.mount({ ...PAGE, surface: 'desktop' })
+  expect((await page.findAll({ type: 'Svg' })).length).toBe(3)
+  // the count the small picture gave stands (2), not the guess of 1
+  expect(await page.find({ type: 'Text', text: /page 1 of 2/ })).toBeDefined()
+  expect(await page.find({ type: 'Text', text: /without the server's details/ })).toBeDefined()
   await page.unmount()
 })
