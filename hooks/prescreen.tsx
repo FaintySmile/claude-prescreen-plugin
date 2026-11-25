@@ -7,7 +7,8 @@
 //
 // Two kinds of button (plan D2). A work step (`prompt`) submits the server's fixed sentence, so Claude does
 // the work. A decision is the RM's own act: the mod records it itself, under the RM's configured name, and
-// never as a prompt. A decision is pressed where the document is seen: the card in the pane always carries
+// never as a prompt (the prompt that follows only tells Claude what was recorded, so the chat catches up).
+// A decision is pressed where the document is seen: the card in the pane always carries
 // its buttons next to the page; above the prompt they show only while the pane shows that step, otherwise
 // a "Show me" that opens it.
 import { atom, read, update } from 'claude-code'
@@ -20,16 +21,19 @@ const PANE = 'prescreen'
 // (mcp__plugin_prescreen_prescreen__*) or one added with `claude mcp add prescreen`
 const TOOL = /^mcp__(?:plugin_prescreen_)?prescreen__([a-z_]+)$/
 const SETS_ACTOR = new Set(['record_decision', 'update_opportunity', 'draft_memo', 'review_link'])
-// tool -> the step its result belongs to: the pane moves there after the call (the server's TOOL_STEP)
-const TOOL_STEP: Record<string, string> = {
+// tool -> the step its result belongs to: the pane moves there after the call (the server's TOOL_STEP).
+// null: a read of where the deal stands, or a decision; the pane follows the server's open step. A status
+// read once took the pane back to step 2 while the deal waited on step 3, so the RM read step 3's items as
+// questions of step 2 and the pane seemed to jump on the first press.
+const TOOL_STEP: Record<string, string | null> = {
   start_prescreen: 'opportunity',
   update_opportunity: 'opportunity',
-  opportunity_status: 'documents',
+  opportunity_status: null,
   collect_documents: 'documents',
-  mailbox_overview: 'documents',
+  mailbox_overview: null,
   run_checks: 'checks',
-  get_operation: 'checks',
-  record_decision: 'checks',
+  get_operation: null,
+  record_decision: null,
   suggest_decision: 'checks',
   quick_spread: 'policy_fit',
   policy_fit: 'policy_fit',
@@ -746,15 +750,24 @@ async function loadDeals($: Engine): Promise<void> {
 
 // ------------------------------------------------------------------ the RM's decisions, and telling the chat
 
-// Pane to chat (D4): a notice row the person sees, and one line queued for the model's next prompt.
+// Pane to chat (D4): the decision goes to the chat at once, as a prompt, so Claude catches up and the
+// chat's last question (often the very decision just pressed) does not stay open. Lines still waiting from
+// before go with it. If the prompt cannot be sent, a notice row shows and the line waits for the next one.
 async function tell($: Engine, rm: string, did: string, b: Board | null): Promise<void> {
   const where = b?.steps.find(s => s.key === b.stage)
-  await $.session.append({ message: { type: 'system', content: [{ type: 'text', text: `Recorded: ${did} (${rm}, in the pane)` }] } }).catch(() => undefined)
-  const line =
-    `Since your last turn the RM decided in the pre-screen pane: ${did}.` +
-    (where ? ` Now: step ${where.n}, ${where.label}: ${where.headline}.` : '') +
-    ' Read opportunity_status before the next step; do not record these decisions again.'
-  await update($, outbox, all => [...all.slice(-19), line])
+  const now = where ? ` Now: step ${where.n}, ${where.label}: ${where.headline}.` : ''
+  const waiting = await read($, outbox)
+  const text = [...waiting, `Decided in the pre-screen pane, already recorded under ${rm}: ${did}.${now}`].join('\n')
+  try {
+    await update($, outbox, () => [])
+    await $.prompt.submit({ text })
+  } catch {
+    await $.session.append({ message: { type: 'system', content: [{ type: 'text', text: `Recorded: ${did} (${rm}, in the pane)` }] } }).catch(() => undefined)
+    const line =
+      `Since your last turn the RM decided in the pre-screen pane: ${did}.${now}` +
+      ' Read opportunity_status before the next step; do not record these decisions again.'
+    await update($, outbox, () => [...waiting.slice(-19), line])
+  }
 }
 
 async function record($: Engine, rm: string, id: string, target: Target, decision: string, extra: Json = {}): Promise<void> {
@@ -1477,8 +1490,7 @@ export const register: Register = (on, options) => {
 
     // chat to pane (D3): the pane moves to the step this tool belongs to, and opens by itself once
     if (ran.deny === undefined && id) {
-      const to = TOOL_STEP[tool]
-      if (to) await update($, step, () => to)
+      if (tool in TOOL_STEP) await update($, step, () => TOOL_STEP[tool] ?? null)
       if (!openedOnce) {
         openedOnce = true
         await openPane($, id).catch(() => undefined)

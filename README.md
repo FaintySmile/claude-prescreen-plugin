@@ -50,17 +50,20 @@ me the pane"). It is drawn from the server's `workbench_view`, never from the mo
 ("Pull in what they sent", "Run the numbers", "Draft the memo") goes to Claude as its fixed sentence; a
 decision shows there only while the pane shows its page, otherwise "Show me …", which opens it.
 
-**Chat and pane stay in step.** A pre-screen tool call moves the pane to its step and reloads it; it
-reloads after each turn and every few seconds while IDP is reading. A decision pressed in the pane is
-recorded by the mod under the RM's configured name, shows a notice row in the chat, and reaches Claude with
-the RM's next prompt, so Claude does not ask again.
+**Chat and pane stay in step.** A pre-screen tool call moves the pane to its step and reloads it; a status
+read (`opportunity_status`, `mailbox_overview`, `get_operation`) or a decision moves it to the deal's open
+step instead, so a read never takes the pane back to a step already done. It reloads after each turn and
+every few seconds while IDP is reading. A decision pressed in the pane is recorded by the mod under the
+RM's configured name and sent to Claude at once as a short prompt ("Decided in the pre-screen pane, already
+recorded under …: …. Now: step n, …"), so the chat catches up and does not ask again. If the prompt cannot
+be sent, a notice row shows and the line goes with the RM's next prompt.
 
 ## What does not depend on the model
 
 | Piece | Where | What it fixes |
 |---|---|---|
 | Steps, stage, buttons, what needs the RM | the service (`workbench_view`) | Which step the deal is on, which buttons are offered, which figures need the RM's eyes (hand-written or under 0.95 confidence, in use) and what IDP held back: computed by the server, drawn as given |
-| The pane and the reply buttons | this plugin | Decisions are pressed where the document is seen and recorded by the mod itself with the server's own target and value; a press is never a prompt |
+| The pane and the reply buttons | this plugin | Decisions are pressed where the document is seen and recorded by the mod itself with the server's own target and value; the prompt that follows only tells Claude what was recorded |
 | Decision guard | this plugin | A `record_decision` from the model is refused unless its target and option are ones the server offers and a confirmed figure equals the one on record; the actor is always "Your name (RM)"; `force_new` is refused |
 | Server-side gates | the service | A screen may decide only what the server offers; the structure can be approved only once the review is clear and the numbers were presented; an IDP rule is acknowledged only with a reason |
 | `policy_fit`, `memo_parts` | the service | The rule tests, the rate walk and memo sections 3, 6, 7 and 8 are computed, not composed |

@@ -26,9 +26,13 @@ cannot be placed (`open_pane` says so; then give the review link, below).
 3. **Decisions are the RM's.** Call `record_decision` only after the RM said so in this chat, with
    `actor` = "${user_config.rm_name}". Propose; don't decide. One decision per RM instruction.
 4. **Decisions made in the pane are already recorded.** When the RM presses a button, the pane records it
-   and your next prompt carries a line "Since your last turn the RM decided in the pre-screen pane: …".
-   Read it, take it as done, and never record it again. Then read `opportunity_status` before the next
-   step.
+   and sends you a prompt "Decided in the pre-screen pane, already recorded under …: …. Now: step n, …"
+   (or, if that could not be sent, your next prompt carries "Since your last turn the RM decided in the
+   pre-screen pane: …"). Take it as done and never record it again. Answer in a line or two: what is
+   left for the RM now, as the "Now:" part and `opportunity_status` give it.
+   **Do not ask the RM in chat to decide a document question or a figure**, and offer no reply buttons
+   for one: say what waits and that the buttons are in the pane. A question left open in chat goes stale
+   the moment the RM presses the button in the pane.
 5. **A figure is confirmed only after the RM saw its page.** In Claude Code the pane shows each figure
    outlined on its page (and up close, and larger); the RM confirms there. If the RM confirms in chat
    after looking at it in the pane, record it with that item's `decision_target`, `confirm` and `value` =

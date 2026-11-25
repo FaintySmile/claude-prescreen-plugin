@@ -9,7 +9,7 @@ const F1 = { type: 'field', check_run_id: 'run_1', field: 'pfs_primary.business_
 const F2 = { type: 'field', check_run_id: 'run_1', field: 'pfs_primary.net_worth', confirmation_id: 'cfm_2' }
 const CARD = 'pfs_primary:p1'
 
-type Deal = { k1Open: boolean; confirmed: string[]; down: boolean; suggested: boolean; metricsOnly?: boolean; gaps?: boolean; spreadError?: boolean; phase?: 'rule' | 'structure' | 'memo' | 'old'; noImage?: boolean; apiShape?: boolean; bigStrips?: boolean; noteWide?: boolean; stallStrips?: boolean; stallOpen?: boolean; bareStrips?: boolean; held?: (() => void)[] }
+type Deal = { k1Open: boolean; confirmed: string[]; down: boolean; suggested: boolean; metricsOnly?: boolean; gaps?: boolean; spreadError?: boolean; refusePrompts?: boolean; phase?: 'rule' | 'structure' | 'memo' | 'old'; noImage?: boolean; apiShape?: boolean; bigStrips?: boolean; noteWide?: boolean; stallStrips?: boolean; stallOpen?: boolean; bareStrips?: boolean; held?: (() => void)[] }
 const RULE = { type: 'idp_rule', check_run_id: 'run_1', rule_id: 'r7', ack_id: 'ack_1' }
 const LINE = '$285,000 C&I equipment term loan, 60 months at 7.85%; $5,758.33 a month'
 
@@ -225,6 +225,8 @@ function server(on: On, d: Deal, calls: Call[], seen: Seen, placed = true) {
     return { result: {} }
   })
   on('prompt.submit', (_, e) => {
+    // an engine that refuses a prompt from the mod (a turn already running, say)
+    if (d.refusePrompts && String(e.text).startsWith('Decided in the pre-screen pane')) throw new Error('busy')
     seen.prompts.push(e as unknown as Record<string, any>)
     return { text: e.text, context: e.context }
   })
@@ -303,18 +305,14 @@ test('the pane draws the server step and its cards; a card decision is recorded,
   expect(confirms.map(c => c.args.target)).toEqual([F1, F2])
   expect(confirms.map(c => c.args.value)).toEqual([224500, 1501000]) // the server's figures, read again just before
   expect(confirms.every(c => c.args.actor === 'Elena Brooks')).toBe(true)
-  // no model turn: a decision never travels as a prompt
-  expect(seen.prompts.length).toBe(0)
-  // the transcript shows a notice row, and the model gets the line with the next prompt
-  const notice = seen.appended.at(-1)
-  expect(notice?.message?.type).toBe('system')
-  expect(notice?.message?.content?.[0]?.text).toContain('Recorded: confirmed the 2 figures on PFS')
+  // the chat catches up at once: the decision goes to Claude as a prompt, with where the deal stands now
+  expect(seen.prompts.length).toBe(1)
+  expect(seen.prompts[0]?.text).toBe(
+    'Decided in the pre-screen pane, already recorded under Elena Brooks: confirmed the 2 figures on PFS | [evil](http://x) signed.pdf as read. Now: step 3, Cross-check and spread: 10 pass; 2 for you.',
+  )
+  // said once: the RM's next prompt carries nothing more
   await $.prompt.submit({ text: 'what next?' } as Parameters<typeof $.prompt.submit>[0])
-  const sent = seen.prompts.at(-1)
-  expect(sent?.text).toBe('what next?')
-  expect(String(sent?.context?.[0])).toContain('Since your last turn the RM decided in the pre-screen pane: confirmed the 2 figures')
-  // said once: the prompt after that carries nothing
-  await $.prompt.submit({ text: 'and then?' } as Parameters<typeof $.prompt.submit>[0])
+  expect(seen.prompts.at(-1)?.text).toBe('what next?')
   expect(seen.prompts.at(-1)?.context).toBeUndefined()
   await ui.unmount()
 })
@@ -356,7 +354,7 @@ test('with the pane on screen the band carries the decisions; after them the nex
   await band.press({ key: 'band-doc_40a46b1710f3:reject' })
   expect(calls.find(c => c.tool === 'record_decision')?.args.target).toEqual(K1)
   expect(calls.find(c => c.tool === 'record_decision')?.args.decision).toBe('reject')
-  expect(seen.prompts.length).toBe(0)
+  expect(seen.prompts.at(-1)?.text).toContain('Decided in the pre-screen pane, already recorded under Elena Brooks: left out Returns and financials.pdf (p. 8).')
   await band.unmount()
 
   band = await $.ui.mount({ ...BAND, surface: 'desktop' })
@@ -368,12 +366,53 @@ test('with the pane on screen the band carries the decisions; after them the nex
   expect(await band.find({ type: 'Text', text: /^Next/ })).toBeDefined()
   await band.press({ key: 'band-next:numbers' })
   expect(seen.prompts.at(-1)?.text).toBe('Run the numbers.')
-  // and the lines about the decisions made since the last turn reach the model with it, as a row of its own
-  // (a prompt the mod submits does not pass its own prompt.submit hook, and takes no context)
-  const row = seen.appended.find(a => a.message?.type === 'user')
-  expect(String(row?.message?.content?.[0]?.text)).toContain('left out Returns and financials.pdf (p. 8)')
-  expect(seen.appended.indexOf(row as Record<string, any>)).toBeGreaterThan(-1)
+  // each decision already reached the chat as its own prompt: nothing is left to go with this one
+  expect(seen.prompts.map(p => String(p.text).slice(0, 27))).toEqual(['Decided in the pre-screen p', 'Decided in the pre-screen p', 'Run the numbers.'])
+  expect(seen.appended.find(a => a.message?.type === 'user')).toBeUndefined()
   await band.unmount()
+})
+
+test('a decision the chat cannot be sent: a notice row, and the line goes with the next prompt', OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  d.refusePrompts = true
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'exc-0-reject' })
+  expect(calls.find(c => c.tool === 'record_decision')?.args.decision).toBe('reject')
+  const notice = seen.appended.at(-1)
+  expect(notice?.message?.type).toBe('system')
+  expect(notice?.message?.content?.[0]?.text).toContain('Recorded: left out Returns and financials.pdf (p. 8)')
+  await $.prompt.submit({ text: 'what next?' } as Parameters<typeof $.prompt.submit>[0])
+  const sent = seen.prompts.at(-1)
+  expect(sent?.text).toBe('what next?')
+  expect(String(sent?.context?.[0])).toContain('Since your last turn the RM decided in the pre-screen pane: left out Returns and financials.pdf (p. 8)')
+  await ui.unmount()
+})
+
+test("a status read by Claude does not take the pane back to a step already done; it follows the deal's open step", OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  server(on, d, calls, seen)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (const tool of ['opportunity_status', 'get_operation', 'record_decision']) {
+    await $.tool.call({ tool: `mcp__plugin_prescreen_prescreen__${tool}`, tool_use_id: `tu_${tool}`, opportunity_id: ID })
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    // the deal waits on step 3 (the K-1 question and the PFS figures): the pane shows step 3, not step 2
+    expect((await ui.find({ type: 'Button', key: 'step-checks' }))?.props.variant).toBe('primary')
+    expect((await ui.find({ type: 'Button', key: 'step-documents' }))?.props.variant).toBe('secondary')
+    expect(await ui.find({ type: 'Button', key: 'exc-0-reject' })).toBeDefined()
+    await ui.unmount()
+  }
+  // the RM's own pick of a step stays until Claude's next pre-screen call
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'step-documents' })
+  expect((await ui.find({ type: 'Button', key: 'step-documents' }))?.props.variant).toBe('primary')
+  await ui.unmount()
+  await $.tool.call({ tool: 'mcp__plugin_prescreen_prescreen__opportunity_status', tool_use_id: 'tu_again', opportunity_id: ID })
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Button', key: 'step-checks' }))?.props.variant).toBe('primary')
+  await ui.unmount()
 })
 
 test('one is wrong: the RM picks the figure, which alone is disputed', OPTIONS, async ($, on) => {
@@ -691,6 +730,7 @@ test('an older server: the pane says so and still shows the documents and their 
 
 test('a slash command leaves the lines for the next prompt the model reads', OPTIONS, async ($, on) => {
   const { d, calls, seen } = fresh()
+  d.refusePrompts = true // the decision waits for a prompt (the chat could not be sent one)
   server(on, d, calls, seen)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
