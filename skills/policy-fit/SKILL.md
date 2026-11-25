@@ -9,16 +9,23 @@ Call `policy_fit` (same `opportunity_id` and `as_of` as the quick spread). The s
 of the loan type, walks the rate guidance, reads the approval level and copies the conditions and
 covenants. **Report what it returns; do not re-test a limit, recompute a rate or rebuild the table.**
 
-The pane's step 4 shows the rule table and step 5 the structure, drawn from this payload. In the chat:
+The pane's step 4 shows the rule table and step 5 the structure, drawn from this payload. The chat keeps
+the same two steps, each under its own heading with the pane's number and name, never merged into one:
 
+**Step 4 · Policy fit**
 - `summary.text`, the one-line verdict, with "policy" and the version.
 - Each Exception with its section and what would cure it (the value meeting `limit_text`); each
   "Cannot test" with its `missing`. Say plainly when no exception is needed. A "Condition" (rule 7.2) is
   not an exception: it becomes a closing condition.
+
+**Step 5 · Structure and pricing**
 - The structure in one line: `structure.one_line`; then the rate walk's result (`guidance_pct`,
   `within_rm_authority`; if `not_evaluated` lists an adder, say the guidance could not be walked and name
   it) and `structure.approval.text`, each with its section. Name any of `structure.estimates`.
-- One question: does the RM approve the structure (step 5 of the **pre-screen** skill)?
+- End with where the RM decides: "Approve the structure or send it back in the pane (step 5), or tell me
+  here." Ask no approval question of your own and offer no reply buttons for it: the pane's buttons
+  record the decision and tell you, and a question left open in chat goes stale the moment they are
+  pressed.
 
 Give the full table in the chat only when the RM asks for it or there is no pane: one row per `rules[]`
 entry, `section` · `rule` · `limit_text` · `value_text` · `status`. `information_only` items are

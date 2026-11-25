@@ -695,6 +695,35 @@ async function goPage($: Engine, to: number): Promise<void> {
 // What each "Larger" button opens, by its key, as last drawn: the `ui.press` hook opens it with its own `$`
 const largerTargets = new Map<string, Large>()
 
+// What each decision or work-step button does, by its key, as last drawn. The `ui.press` hook runs it with
+// its own `$`: the drawing's `$` stops answering after 30 s in all, and a decision (record, reload, then the
+// prompt that tells the chat) pressed late failed half-way and silently: recorded, but the chat never heard.
+// The Button keeps the same work as its own onPress, for an engine that raises no press hook.
+type Press =
+  | { kind: 'document'; rm: string; b: Board; target: Target; decision: string; title: string }
+  | { kind: 'confirm'; rm: string; b: Board; card: string }
+  | { kind: 'dispute'; rm: string; b: Board; a: AttentionRow }
+  | { kind: 'pick'; card: string }
+  | { kind: 'acknowledge'; rm: string; b: Board; a: AttentionRow }
+  | { kind: 'structure'; rm: string; b: Board; p: Proposal }
+  | { kind: 'act'; rm: string; p: Proposal }
+const pressed = new Map<string, Press>()
+
+async function runPress($: Engine, w: Press): Promise<unknown> {
+  if (w.kind === 'document') return decideDocument($, w.rm, w.b, w.target, w.decision, w.title)
+  if (w.kind === 'confirm') return confirmCard($, w.rm, w.b, w.card)
+  if (w.kind === 'dispute') return disputeOne($, w.rm, w.b, w.a)
+  if (w.kind === 'pick') return update($, picking, () => w.card)
+  if (w.kind === 'acknowledge') return acknowledge($, w.rm, w.b, w.a)
+  if (w.kind === 'structure') return structure($, w.rm, w.b, w.p)
+  return act($, w.rm, w.p)
+}
+
+function onAct($: Engine, key: string, w: Press): () => Promise<unknown> {
+  pressed.set(key, w)
+  return () => runPress($, w)
+}
+
 async function load($: Engine, id: string): Promise<Board | null> {
   const server = await findServer($)
   if (!server) {
@@ -1044,7 +1073,7 @@ async function viewChecks($: Engine, e: any, rm: string, b: Board, columns: numb
               key={`exc-${i}-${p.decision}`}
               label={p.label}
               variant={p.suggested || (!x.suggestion && p.decision === 'accept') ? 'primary' : 'secondary'}
-              onPress={() => decideDocument($, rm, b, x.target, p.decision, x.title)}
+              onPress={onAct($, `exc-${i}-${p.decision}`, { kind: 'document', rm, b, target: x.target, decision: p.decision, title: x.title })}
             />
           ))}
         </Box>
@@ -1098,11 +1127,11 @@ async function viewChecks($: Engine, e: any, rm: string, b: Board, columns: numb
           ) : null}
           {first.blocking && first.target ? (
             <Box flexDirection="row" flexWrap="wrap" gap={1} marginTop={1}>
-              <Button key={`card-${i}-confirm`} label={several ? 'All match the page' : `The page shows ${figure(first.value)}`} variant="primary" onPress={() => confirmCard($, rm, b, card)} />
+              <Button key={`card-${i}-confirm`} label={several ? 'All match the page' : `The page shows ${figure(first.value)}`} variant="primary" onPress={onAct($, `card-${i}-confirm`, { kind: 'confirm', rm, b, card })} />
               <Button
                 key={`card-${i}-dispute`}
                 label={several ? 'One is wrong…' : 'It shows something else'}
-                onPress={() => (several ? update($, picking, () => card) : disputeOne($, rm, b, first))}
+                onPress={onAct($, `card-${i}-dispute`, several ? { kind: 'pick', card } : { kind: 'dispute', rm, b, a: first })}
               />
             </Box>
           ) : null}
@@ -1110,7 +1139,7 @@ async function viewChecks($: Engine, e: any, rm: string, b: Board, columns: numb
             <Box flexDirection="column" gap={1} marginTop={1}>
               <Text>Which figure is wrong?</Text>
               {rows.map((a, j) => (
-                <Button key={`wrong-${i}-${j}`} label={`${field(a.ref)}: ${figure(a.value)} is wrong`} onPress={() => disputeOne($, rm, b, a)} />
+                <Button key={`wrong-${i}-${j}`} label={`${field(a.ref)}: ${figure(a.value)} is wrong`} onPress={onAct($, `wrong-${i}-${j}`, { kind: 'dispute', rm, b, a })} />
               ))}
               <Button key={`wrong-${i}-none`} label="None, go back" onPress={() => update($, picking, () => null)} />
             </Box>
@@ -1139,7 +1168,7 @@ async function viewChecks($: Engine, e: any, rm: string, b: Board, columns: numb
                 onSubmit={(v: string) => update($, reasons, all => ({ ...all, [card]: v }))}
               />
               <Box flexDirection="row" flexWrap="wrap" gap={1} marginTop={1}>
-                <Button key={`card-${i}-ack`} label="Go on, noted" variant="primary" onPress={() => acknowledge($, rm, b, first)} />
+                <Button key={`card-${i}-ack`} label="Go on, noted" variant="primary" onPress={onAct($, `card-${i}-ack`, { kind: 'acknowledge', rm, b, a: first })} />
               </Box>
             </Box>
           ) : (
@@ -1244,7 +1273,7 @@ async function viewStep($: Engine, e: any, rm: string, b: Board, shown: string, 
           />
           <Box flexDirection="row" flexWrap="wrap" gap={1} marginTop={1}>
             {offered.map(p => (
-              <Button key={`structure-${p.decision}`} label={p.label} variant={p.decision === 'confirm' ? 'primary' : 'secondary'} onPress={() => structure($, rm, b, p)} />
+              <Button key={`structure-${p.decision}`} label={p.label} variant={p.decision === 'confirm' ? 'primary' : 'secondary'} onPress={onAct($, `structure-${p.decision}`, { kind: 'structure', rm, b, p })} />
             ))}
           </Box>
         </Box>
@@ -1321,7 +1350,7 @@ async function drawPane($: Engine, e: any, rm: string) {
       {work.length ? (
         <Box flexDirection="row" flexWrap="wrap" gap={1} marginTop={1}>
           {work.map(p => (
-            <Button key={`work-${p.id}`} label={p.label} variant="primary" onPress={() => act($, rm, p)} />
+            <Button key={`work-${p.id}`} label={p.label} variant="primary" onPress={onAct($, `work-${p.id}`, { kind: 'act', rm, p })} />
           ))}
         </Box>
       ) : null}
@@ -1388,7 +1417,7 @@ async function drawBand($: Engine, e: any, rm: string, next: (e: any) => any) {
     <Box>
       <Text dimColor>{checkpoint ? 'RM checkpoint ' : 'Next '}</Text>
       {shownNow.map(p => (
-        <Button key={`band-${p.id}`} label={p.label} variant={p.suggested || p.kind === 'prompt' ? 'primary' : 'secondary'} onPress={() => act($, rm, p)} />
+        <Button key={`band-${p.id}`} label={p.label} variant={p.suggested || p.kind === 'prompt' ? 'primary' : 'secondary'} onPress={onAct($, `band-${p.id}`, { kind: 'act', rm, p })} />
       ))}
     </Box>
   )
@@ -1529,6 +1558,11 @@ export const register: Register = (on, options) => {
   // hook's `$` calls do not count against its budget. The closures stay as the fallback.
   on('ui.press', async ($, e, next) => {
     if (e.plugin !== 'prescreen') return next(e)
+    const work = e.requestId === PAGE_PANE ? undefined : pressed.get(e.element)
+    if (work) {
+      await runPress($, work)
+      return { element: e.element }
+    }
     const target = largerTargets.get(e.element)
     if (target && e.requestId === PANE) {
       await openLarge($, target)

@@ -580,6 +580,8 @@ test('the structure: approved with the server line, sent back only with a reason
   expect(ok?.args.target).toEqual({ type: 'structure' })
   expect(ok?.args.decision).toBe('confirm')
   expect(ok?.args.reason).toBe(LINE)
+  // the chat hears it at once, so its own question about the structure does not stay open
+  expect(seen.prompts.at(-1)?.text).toContain(`Decided in the pre-screen pane, already recorded under Elena Brooks: approved the structure: ${LINE}.`)
   await ui.unmount()
 })
 

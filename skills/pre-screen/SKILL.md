@@ -108,11 +108,15 @@ the method notes once, in these words:
 - when the spread marks it as estimated: "Personal debt service is estimated from the PFS balances at
   policy factors."
 
-The pane shows the metrics and the rule table; present the policy fit with the **policy-fit** skill.
+The pane shows the metrics and the rule table; present the policy fit with the **policy-fit** skill. The
+numbers end step 4; the structure is step 5, a step of its own in the chat too (the policy-fit skill gives
+each its heading).
 
 ### 5. The structure
 The structure is `policy_fit.structure`, in one line in `structure.one_line`. Once the review is clear
-and the numbers were presented, the RM approves it (or sends it back) in the pane or in chat. In chat:
+and the numbers were presented, the RM approves it (or sends it back) in the pane, or tells you in chat.
+When the pane records it, you get "Decided in the pre-screen pane, already recorded …" (rule 4): take
+it as done, record nothing, and say the next step is the memo. Only when the RM says it in chat:
 `record_decision` with target `{"type": "structure"}`, decision `confirm` and `reason` =
 `structure.one_line`; or `dispute` with the RM's reason. That only writes the opportunity log; nothing is
 sent. The server refuses an approval before the review is clear (`structure_not_offered`).
