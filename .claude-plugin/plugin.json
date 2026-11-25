@@ -1,7 +1,7 @@
 {
   "name": "prescreen",
   "displayName": "Menelaus Pre-Screen",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Commercial-loan pre-screen from the deal mailbox, in a side pane: documents read by IDP right after collection, the figures that need the RM on their pages, cross-checks, quick spread, policy fit, structure and the pre-screen memo.",
   "author": {
     "name": "PythonRPA"

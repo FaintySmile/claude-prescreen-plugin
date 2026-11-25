@@ -815,3 +815,32 @@ test("strips without the server's details: drawn, and the pane says the page cou
   expect(await page.find({ type: 'Text', text: /without the server's details/ })).toBeDefined()
   await page.unmount()
 })
+
+test("Larger and Try again run in the mod's press hook, not the Button's closure (whose render's calls stop after 30 s)", OPTIONS, async ($, on) => {
+  const { d, calls, seen } = fresh()
+  server(on, d, calls, seen)
+  // beneath the mod: a press the mod lets through reaches here and then the Button's own onPress
+  const below: string[] = []
+  on('ui.press', (_, e, next) => {
+    below.push(e.element)
+    return next(e)
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'prescreen', args: 'riverbend' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  calls.length = 0
+  await ui.press({ key: 'larger-doc-doc_40a46b1710f3' })
+  await ui.press({ key: 'card-0-confirm' })
+  await ui.unmount()
+  // a decision still goes to its Button (recorded); Larger never reaches the closure. (2.1.331's test kit
+  // raises no ui.press to a test's own hook, so there `below` stays empty either way.)
+  expect(calls.some(c => c.tool === 'record_decision')).toBe(true)
+  expect(below).not.toContain('larger-doc-doc_40a46b1710f3')
+  expect(calls.filter(c => c.tool === 'document_image' && c.args.bands === 3).map(c => c.args.band)).toEqual([1, 2, 3])
+  const page = await $.ui.mount({ ...PAGE, surface: 'desktop' })
+  expect((await page.findAll({ type: 'Svg' })).length).toBe(3)
+  await page.press({ key: 'page-next' })
+  expect(await page.find({ type: 'Text', text: /page 2 of 2/ })).toBeDefined()
+  await page.unmount()
+  expect(below.filter(k => k.startsWith('page-') || k.startsWith('larger-'))).toEqual([])
+})

@@ -565,11 +565,26 @@ async function openLarge($: Engine, what: Large): Promise<void> {
   }
 }
 
-// Try again, from the Page pane's own button: a handler of the pane on screen, not of the hidden Pre-screen pane
+// Try again, from the Page pane's own button
 async function retryLarge($: Engine): Promise<void> {
   await update($, strips, () => ({})).catch(() => undefined)
   await loadLarge($)
 }
+
+// another page of the document in the Page pane
+async function goPage($: Engine, to: number): Promise<void> {
+  try {
+    await update($, large, v => (v ? { ...v, page: to } : v))
+    await update($, strips, () => ({}))
+  } catch (err) {
+    await setStage($, `Stopped before loading: ${message(err)}`, true)
+    return
+  }
+  await loadLarge($)
+}
+
+// What each "Larger" button opens, by its key, as last drawn: the `ui.press` hook opens it with its own `$`
+const largerTargets = new Map<string, Large>()
 
 async function load($: Engine, id: string): Promise<Board | null> {
   const server = await findServer($)
@@ -802,11 +817,19 @@ function shot($: Engine, e: any, pic: Picture | undefined, name: string, columns
   return <Svg key={`pic-${name}`} source={source} alt={pic.caption} />
 }
 
+// keeps what a Larger button opens under its key (for the press hook) and hands it back
+function larger(key: string, what: Large): Large {
+  largerTargets.set(key, what)
+  return what
+}
+
 async function documentPager($: Engine, e: any, b: Board, docId: string, title: string, columns: number) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const n = (await read($, page))[docId] ?? 1
   const pic = (await read($, pictures))[`doc|${docId}|${n}`]
   const total = pic?.pages ?? 1
+  // kept under the button's key when drawn: the press hook opens it
+  const big = larger(`larger-doc-${docId}`, { kind: 'doc', opportunityId: b.id, title, docId, runId: '', ref: '', refs: [], page: n, pages: total })
   const go = async (to: number) => {
     await update($, page, all => ({ ...all, [docId]: to }))
     const server = await findServer($)
@@ -822,11 +845,7 @@ async function documentPager($: Engine, e: any, b: Board, docId: string, title: 
           </Text>
           {n > 1 ? <Button key={`prev-${docId}`} label="Previous page" onPress={() => go(n - 1)} /> : null}
           {n < total ? <Button key={`next-${docId}`} label="Next page" onPress={() => go(n + 1)} /> : null}
-          <Button
-            key={`larger-doc-${docId}`}
-            label="Larger"
-            onPress={() => openLarge($, { kind: 'doc', opportunityId: b.id, title, docId, runId: '', ref: '', refs: [], page: n, pages: total })}
-          />
+          <Button key={`larger-doc-${docId}`} label="Larger" onPress={() => openLarge($, big)} />
         </Box>
       ) : pic ? null : (
         <Text dimColor>Loading the page of {title}…</Text>
@@ -851,16 +870,7 @@ async function drawPagePane($: Engine, e: any) {
     .sort((a, b) => Number(a) - Number(b))
     .map(k => s[k])
   const st = await read($, pageStage)
-  const go = async (to: number) => {
-    try {
-      await update($, large, v => (v ? { ...v, page: to } : v))
-      await update($, strips, () => ({}))
-    } catch (err) {
-      await setStage($, `Stopped before loading: ${message(err)}`, true)
-      return
-    }
-    await loadLarge($)
-  }
+  const go = (to: number) => goPage($, to)
   // a page not (fully) drawn: the stage says why, and the pane's own button asks again
   const unfinished = !list.length || list.some(p => !p || p.error)
   return (
@@ -930,6 +940,8 @@ async function viewChecks($: Engine, e: any, rm: string, b: Board, columns: numb
     if (first.kind === 'field') {
       const several = rows.length > 1
       const pic = b.run ? pics[`card|${b.run.id}|${card}`] : undefined
+      // kept under the button's key when drawn: the press hook opens it
+      const big = larger(`larger-card-${i}`, { kind: 'card', opportunityId: b.id, title: first.document, docId: '', runId: b.run?.id ?? '', ref: first.ref, refs: rows.map(r => r.ref), page: first.page, pages: 1 })
       out.push(
         <Box key={`card-${i}`} flexDirection="column" borderStyle="round" paddingX={1} paddingY={1} marginTop={1}>
           <Text bold>
@@ -962,9 +974,7 @@ async function viewChecks($: Engine, e: any, rm: string, b: Board, columns: numb
               <Button
                 key={`larger-card-${i}`}
                 label="Larger"
-                onPress={() =>
-                  openLarge($, { kind: 'card', opportunityId: b.id, title: first.document, docId: '', runId: b.run?.id ?? '', ref: first.ref, refs: rows.map(r => r.ref), page: first.page, pages: 1 })
-                }
+                onPress={() => openLarge($, big)}
               />
             </Box>
           ) : null}
@@ -1393,6 +1403,31 @@ export const register: Register = (on, options) => {
     if (id) await load($, id).catch(() => undefined)
     return next(e)
   })
+
+  // The Page pane's work runs here, on this hook's own `$`, not in the Buttons' `onPress`: a closure keeps the
+  // `$` of the render that drew it, whose calls fail after 30 seconds in all (HookBudget), and a page in
+  // strips from the service takes longer, which left the pane frozen on "Asking for part 4 of 4". A press
+  // hook's `$` calls do not count against its budget. The closures stay as the fallback.
+  on('ui.press', async ($, e, next) => {
+    if (e.plugin !== 'prescreen') return next(e)
+    const target = largerTargets.get(e.element)
+    if (target && e.requestId === PANE) {
+      await openLarge($, target)
+      return { element: e.element }
+    }
+    if (e.requestId === PAGE_PANE && e.element === 'page-retry') {
+      await retryLarge($)
+      return { element: e.element }
+    }
+    if (e.requestId === PAGE_PANE && (e.element === 'page-prev' || e.element === 'page-next')) {
+      const L = await read($, large)
+      if (L) {
+        await goPage($, L.page + (e.element === 'page-next' ? 1 : -1))
+        return { element: e.element }
+      }
+    }
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('ui.close', async ($, e, next) => {
     const id = (e as unknown as Json).id
